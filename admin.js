@@ -40,7 +40,7 @@ async function loadEntries(){
     const rows=snapshot.docs.map(d=>({id:d.id,...d.data()}));
     stats.innerHTML=`<div><span>Izen-emateak</span><strong>${rows.length}</strong></div><div><span>Ordainduta</span><strong>${rows.filter(x=>x.estado==='pagado').length}</strong></div><div><span>Itxaron-zerrenda</span><strong>${rows.filter(x=>x.estado==='espera').length}</strong></div>`;
     if(!rows.length){entries.textContent='Oraindik ez dago izen-ematerik.';return;}
-    entries.innerHTML=rows.map(x=>`<div class="entry"><strong>#${safe(x.numero)} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado || 'jasota')}</small>${x.prueba !== true && ['pendiente','espera','ofrecida'].includes(x.estado) ? `<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button> <button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>` : ''}${x.prueba === true && x.estado === 'proba' ? `<button class="annul-test" data-id="${safe(x.id)}" type="button">Probako izen-ematea baliogabetu</button>` : ''}</div>`).join('');
+    entries.innerHTML=rows.map(x=>`<div class="entry"><strong>#${safe(x.numero)} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado || 'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${x.prueba !== true && ['pendiente','espera','ofrecida'].includes(x.estado) ? `<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button> <button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>` : ''}${x.prueba === true && x.estado === 'proba' ? `<button class="annul-test" data-id="${safe(x.id)}" type="button">Probako izen-ematea baliogabetu</button>` : ''}</div>`).join('');
     entries.querySelectorAll('.pay-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'pagado',b)));entries.querySelectorAll('.annul-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'baliogabetuta',b)));entries.querySelectorAll('.annul-test').forEach(button => button.addEventListener('click', () => annulTest(button.dataset.id, button)));
   } catch(e) {
     entries.textContent='Ezin izan dira izen-emateak irakurri: '+e.code;
@@ -84,7 +84,6 @@ async function changeReal(id,status,button){if(!confirm(status==='pagado'?'Ordai
 
 // Izen-emateak ireki/itxi: administratzaile baimenduentzat soilik.
 const registrationRef=doc(db,'config','contador');
-const registrationDeadline=new Date('2026-12-01T00:00:00+01:00');
 let registrationOpen=false;
 async function loadRegistrationStatus(){
  const status=el('registration-status'), toggle=el('registration-toggle');
@@ -93,16 +92,14 @@ async function loadRegistrationStatus(){
   const snapshot=await getDoc(registrationRef);
   if(!snapshot.exists()){status.textContent='Kontagailua ez da aurkitu.';return;}
   registrationOpen=snapshot.data().abierto===true;
-  const expired=Date.now()>=registrationDeadline.getTime();
-  status.textContent=expired?'Epea amaituta (itxita)':registrationOpen?'IREKITA':'ITXITA';
+  status.textContent=registrationOpen?'IREKITA':'ITXITA';
   toggle.textContent=registrationOpen?'Itxi izen-emateak':'Ireki izen-emateak';
-  toggle.disabled=expired;
+  toggle.disabled=false;
  }catch(e){status.textContent='Ezin izan da egoera irakurri: '+e.code;}
 }
 el('registration-toggle').addEventListener('click',async()=>{
  const user=auth.currentUser;
  if(!user||!user.emailVerified||!allowed.has((user.email||'').toLowerCase()))return;
- if(Date.now()>=registrationDeadline.getTime()){msg('Izen-emateko epea amaitu da.');return;}
  const next=!registrationOpen;
  if(!confirm(next?'Izen-emateak publikoki IREKI nahi dituzu?':'Izen-emateak ITXI nahi dituzu?'))return;
  const button=el('registration-toggle');button.disabled=true;
@@ -110,3 +107,9 @@ el('registration-toggle').addEventListener('click',async()=>{
  catch(e){msg('Ezin izan da egoera aldatu: '+e.code);}
  finally{await loadRegistrationStatus();}
 });
+
+// Firestore-ko zerbitzariaren ordua, Euskadiko ordu-eremuan.
+function formatDate(value){
+ if(!value || typeof value.toDate !== 'function') return 'Zehaztu gabe';
+ return new Intl.DateTimeFormat('eu-ES',{timeZone:'Europe/Madrid',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(value.toDate());
+}
