@@ -32,53 +32,54 @@ onAuthStateChanged(auth,async user=>{
 });
 
 const safe = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let currentRows=[];
+const active = x => x.prueba !== true && ['pendiente','pagado','ofrecida'].includes(x.estado);
+const fmtNum = n => String(n).padStart(3,'0');
+function deadline(x){if(!x.notificado || typeof x.notificado.toDate!=='function')return null;return new Date(x.notificado.toDate().getTime()+48*3600*1000);}
+function formatInstant(d){return new Intl.DateTimeFormat('eu-ES',{timeZone:'Europe/Madrid',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(d);}
 async function loadEntries(){
-  const entries=el('entries'), stats=el('stats');
-  entries.textContent='Izen-emateak kargatzen…';
-  try {
-    const snapshot=await getDocs(query(collection(db,'inscripciones'),orderBy('numero','asc')));
-    const rows=snapshot.docs.map(d=>({id:d.id,...d.data()}));
-    stats.innerHTML=`<div><span>Izen-emateak</span><strong>${rows.length}</strong></div><div><span>Ordainduta</span><strong>${rows.filter(x=>x.estado==='pagado').length}</strong></div><div><span>Itxaron-zerrenda</span><strong>${rows.filter(x=>x.estado==='espera').length}</strong></div>`;
-    if(!rows.length){entries.textContent='Oraindik ez dago izen-ematerik.';return;}
-    entries.innerHTML=rows.map(x=>`<div class="entry"><strong>#${safe(x.numero)} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado || 'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${x.prueba !== true && ['pendiente','espera','ofrecida'].includes(x.estado) ? `<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button> <button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>` : ''}${x.prueba === true && x.estado === 'proba' ? `<button class="annul-test" data-id="${safe(x.id)}" type="button">Probako izen-ematea baliogabetu</button>` : ''}</div>`).join('');
-    entries.querySelectorAll('.pay-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'pagado',b)));entries.querySelectorAll('.annul-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'baliogabetuta',b)));entries.querySelectorAll('.annul-test').forEach(button => button.addEventListener('click', () => annulTest(button.dataset.id, button)));
-  } catch(e) {
-    entries.textContent='Ezin izan dira izen-emateak irakurri: '+e.code;
-  }
+ const entries=el('entries'),stats=el('stats');entries.textContent='Izen-emateak kargatzen…';
+ try{
+  const snap=await getDocs(query(collection(db,'inscripciones'),orderBy('numero','asc')));
+  currentRows=snap.docs.map(d=>({id:d.id,...d.data()}));const rows=currentRows;
+  const occupied=rows.filter(active).length;
+  const firstWaiting=rows.find(x=>x.prueba!==true&&x.estado==='espera');
+  const canOffer=occupied<24 && !!firstWaiting;
+  stats.innerHTML=`<div><span>Plaza aktiboak</span><strong>${occupied}/24</strong></div><div><span>Ordainduta</span><strong>${rows.filter(x=>x.estado==='pagado').length}</strong></div><div><span>Itxaron-zerrenda</span><strong>${rows.filter(x=>x.estado==='espera').length}</strong></div>`;
+  if(!rows.length){entries.textContent='Oraindik ez dago izen-ematerik.';return;}
+  entries.innerHTML=rows.map(x=>{
+   const offered=x.estado==='ofrecida';const limit=deadline(x);const expired=limit&&Date.now()>limit.getTime();
+   const offerButton=canOffer&&firstWaiting.id===x.id?`<button class="offer" data-id="${safe(x.id)}" type="button">Plaza eskaini (posta prestatu)</button>`:'';
+   const confirmButton=x.estado==='espera'&&canOffer&&firstWaiting.id===x.id?`<button class="sent" data-id="${safe(x.id)}" type="button">Jakinarazpena bidalita</button>`:'';
+   const payButton=x.prueba!==true&&['pendiente','ofrecida'].includes(x.estado)?`<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button>`:'';
+   const annulButton=x.prueba!==true&&['pendiente','espera','ofrecida'].includes(x.estado)?`<button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>`:'';
+   return `<div class="entry"><strong>#${safe(fmtNum(x.numero))} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado||'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${offered?`<small>Jakinarazpena: ${safe(formatDate(x.notificado))} · Ordaintzeko muga: ${limit?safe(formatInstant(limit)):'—'} ${expired?'(EPEA AMAITUTA)':''}</small>`:''}<div class="toolbar" style="margin-top:9px">${offerButton}${confirmButton}${payButton}${annulButton}</div></div>`;
+  }).join('');
+  entries.querySelectorAll('.offer').forEach(b=>b.addEventListener('click',()=>prepareEmail(b.dataset.id)));
+  entries.querySelectorAll('.sent').forEach(b=>b.addEventListener('click',()=>markSent(b.dataset.id,b)));
+  entries.querySelectorAll('.pay-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'pagado',b)));
+  entries.querySelectorAll('.annul-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'baliogabetuta',b)));
+ }catch(e){entries.textContent='Ezin izan dira izen-emateak irakurri: '+(e.code||e.message);}
+}
+function prepareEmail(id){
+ const x=currentRows.find(r=>r.id===id);if(!x||x.estado!=='espera')return;
+ const concept='TRINKETE-'+fmtNum(x.numero);
+ const subject='III. Trinkete Txapelketa – Plaza eskainita';
+ const body=`Kaixo!\n\nIII. Trinkete Txapelketan parte hartzeko plaza bat eskaini zaizue.\n\nIzen-emate zenbakia: ${fmtNum(x.numero)}\n\nBizum: 638 051 253\nZenbatekoa: 20 €\nKontzeptua: ${concept}\n\nJakinarazpen hau bidaltzen denetik 48 ordu izango dituzue ordainketa egiteko. Ordainketa epe barruan egiten ez bada, plaza galduko da.\n\nEskerrik asko!`;
+ window.location.href='mailto:'+encodeURIComponent(x.email)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
+ msg('Posta ireki da. Bidali ondoren, sakatu "Jakinarazpena bidalita".');
+}
+async function markSent(id,button){
+ if(!confirm('Posta benetan bidali duzu? Baieztatzean 48 orduko epea hasiko da.'))return;
+ button.disabled=true;
+ try{
+  // Transactions keep the selected waitlist entry unchanged if another admin acts.
+  await runTransaction(db,async t=>{const ref=doc(db,'inscripciones',id);const s=await t.get(ref);if(!s.exists()||s.data().estado!=='espera')throw Error('Egoera aldatu da');t.update(ref,{estado:'ofrecida',notificado:serverTimestamp()});});
+  msg('Jakinarazpena erregistratuta. 48 orduko epea hasi da.');await loadEntries();
+ }catch(e){msg('Ezin izan da eskaintza gorde: '+(e.code||e.message));button.disabled=false;}
 }
 el('refresh').disabled=false;
 el('refresh').addEventListener('click',()=>{if(auth.currentUser && allowed.has((auth.currentUser.email||'').toLowerCase()))loadEntries();});
-
-// Proba kontrolatua: administratzaileak bakarrik sor dezake test-erregistroa.
-el('test-create').addEventListener('click', async () => {
-  const user = auth.currentUser;
-  if (!user || !user.emailVerified || !allowed.has((user.email || '').toLowerCase())) return;
-  if (!confirm('Probako bikote bat sortu Firestore-n?')) return;
-  el('test-create').disabled = true;
-  try {
-    await addDoc(collection(db, 'inscripciones'), {
-      numero: 1, jugador1: 'PROBA A', jugador2: 'PROBA B',
-      email: 'proba@example.invalid', telefono: '000000000',
-      estado: 'proba', prueba: true, creado: serverTimestamp()
-    });
-    msg('Probako bikotea gorde da. Ez da benetako izen-ematea.');
-    await loadEntries();
-  } catch(e) { msg('Ezin izan da proba gorde: ' + e.code); }
-  finally { el('test-create').disabled = false; }
-});
-
-// Fase de prueba: solo se permite anular registros ficticios, nunca inscripciones reales.
-async function annulTest(id, button) {
-  const user=auth.currentUser;
-  if(!user || !user.emailVerified || !allowed.has((user.email||'').toLowerCase())) return;
-  if(!confirm('Probako izen-emate hau baliogabetu? Erregistroa gordeta geratuko da.')) return;
-  button.disabled=true;
-  try {
-    await updateDoc(doc(db,'inscripciones',id), {estado:'baliogabetuta'});
-    msg('Probako izen-ematea baliogabetuta. Zenbakia ez da berrerabiliko.');
-    await loadEntries();
-  } catch(e) { msg('Ezin izan da baliogabetu: '+e.code); button.disabled=false; }
-}
 
 async function changeReal(id,status,button){if(!confirm(status==='pagado'?'Ordainketa egiaztatu duzu?':'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.'))return;button.disabled=true;try{await updateDoc(doc(db,'inscripciones',id),{estado:status});await loadEntries();}catch(e){msg('Ezin izan da aldatu: '+e.code);button.disabled=false;}}
 
