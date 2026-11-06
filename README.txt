@@ -1,0 +1,1 @@
+V9: admin.html + admin.js con acceso Google Firebase Auth. Subir AMBOS archivos a la raíz del repositorio GitHub Pages. index.html mantiene V8. Firestore permanece cerrado; no hay inscripciones reales ni panel operativo. El filtro de correos en el navegador NO sustituye reglas de seguridad del servidor.
