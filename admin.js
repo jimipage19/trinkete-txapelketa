@@ -1,11 +1,31 @@
-import {firebaseConfig,adminEmail} from './firebase-config.js';
-const msg=document.querySelector('#admin-msg');if(!firebaseConfig.apiKey){msg.textContent='Firebase konfiguratu gabe dago.';}else{
- const [{initializeApp},{getAuth,GoogleAuthProvider,signInWithPopup,onAuthStateChanged,signOut},{getFunctions,httpsCallable}]=await Promise.all([import('https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js'),import('https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js'),import('https://www.gstatic.com/firebasejs/11.10.0/firebase-functions.js')]);
- const app=initializeApp(firebaseConfig),auth=getAuth(app),fns=getFunctions(app,'europe-west1');const call=n=>httpsCallable(fns,n);const login=document.querySelector('#login'),dashboard=document.querySelector('#dashboard');
- document.querySelector('#signin').onclick=async()=>{try{await signInWithPopup(auth,new GoogleAuthProvider())}catch(e){msg.textContent='Ezin izan da saioa hasi.'}};
- document.querySelector('#signout').onclick=()=>signOut(auth);
- const refresh=async()=>{msg.textContent='Datuak kargatzen...';try{const {entries}= (await call('listPairs')()).data;document.querySelector('#stats').innerHTML=`<div><span>Guztira</span><strong>${entries.length}</strong></div><div><span>Ordainduta</span><strong>${entries.filter(e=>e.status==='paid').length}</strong></div><div><span>Itxaron-zerrenda</span><strong>${entries.filter(e=>e.status==='wait').length}</strong></div>`;const root=document.querySelector('#entries');root.replaceChildren();for(const e of entries){const div=document.createElement('div');div.className='entry';const label=document.createElement('div');label.textContent=`#${String(e.number).padStart(3,'0')} — ${e.player1} / ${e.player2}`;const detail=document.createElement('small');detail.textContent=`${e.email} · ${e.phone} · ${e.status}${e.deadline?' · Epea: '+new Date(e.deadline).toLocaleString('eu-ES'):''}`;div.append(label,detail);if(e.status==='pending'||e.status==='offered'){const btn=document.createElement('button');btn.textContent='Ordainketa baieztatu';btn.onclick=async()=>{if(!confirm('Bizuma egiaztatu duzu?'))return;btn.disabled=true;try{await call('confirmPayment')({number:e.number});await refresh()}catch(err){msg.textContent='Errorea: '+err.message;btn.disabled=false}};div.append(document.createElement('br'),btn)}root.append(div)}msg.textContent='';}catch(err){msg.textContent='Ezin dira datuak kargatu: '+err.message}};
- document.querySelector('#refresh').onclick=refresh;
- document.querySelector('#promote').onclick=async()=>{if(!confirm('Plaza hutsak eskaini eta epea amaitutakoak baztertu?'))return;try{const r=(await call('promoteWaiting')()).data;msg.textContent=`Eskaintza berriak: ${r.offered.join(', ')||'bat ere ez'}. Jakinarazi eskuz, beharrezkoa bada.`;await refresh()}catch(err){msg.textContent=err.message}};
- onAuthStateChanged(auth,u=>{const ok=u?.email?.toLowerCase()===adminEmail.toLowerCase();login.hidden=ok;dashboard.hidden=!ok;if(ok)refresh();else if(u)msg.textContent='Kontu honek ez du baimenik.';else msg.textContent='';});
-}
+import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
+import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
+const config = {
+  apiKey: 'AIzaSyBvCzJ7mM-S-ov65HeGZ4Uqf4yAIo_YeKI',
+  authDomain: 'trinkete-txapelketa.firebaseapp.com',
+  projectId: 'trinkete-txapelketa',
+  storageBucket: 'trinkete-txapelketa.firebasestorage.app',
+  messagingSenderId: '367761843147',
+  appId: '1:367761843147:web:1813eea95c3794872b4c4e'
+};
+const allowed = new Set(['andoitz1919@gmail.com', 'vazqueziturriondoiban@gmail.com']);
+const app=initializeApp(config), auth=getAuth(app), provider=new GoogleAuthProvider();
+const el=id=>document.getElementById(id), msg=t=>el('admin-msg').textContent=t;
+provider.setCustomParameters({prompt:'select_account'});
+el('signin').addEventListener('click',async()=>{
+  msg('');
+  try { await signInWithPopup(auth,provider); }
+  catch(e) {
+    if (e.code==='auth/popup-blocked') { await signInWithRedirect(auth,provider); return; }
+    msg('Ezin izan da Google bidez sartu: '+e.code);
+  }
+});
+el('signout').addEventListener('click',async()=>{await signOut(auth);msg('Saioa itxita.');});
+getRedirectResult(auth).catch(e=>msg('Saioa hasteko errorea: '+e.code));
+onAuthStateChanged(auth,async user=>{
+  const permitted=!!user && !!user.email && allowed.has(user.email.toLowerCase()) && user.emailVerified;
+  el('login').hidden=permitted;
+  el('dashboard').hidden=!permitted;
+  if(permitted){el('account').textContent='Saioa hasita: '+user.email;msg('Sarbidea egiaztatuta. Kudeaketa ez dago aktibatuta.');}
+  else if(user){msg('Kontu honek ez du administratzaile baimenik.');await signOut(auth);}
+});
