@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
-import { getFirestore, collection, getDocs, query, orderBy } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import { getFirestore, collection, getDocs, query, orderBy, addDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 const config = {
   apiKey: 'AIzaSyBvCzJ7mM-S-ov65HeGZ4Uqf4yAIo_YeKI',
@@ -47,3 +47,21 @@ async function loadEntries(){
 }
 el('refresh').disabled=false;
 el('refresh').addEventListener('click',()=>{if(auth.currentUser && allowed.has((auth.currentUser.email||'').toLowerCase()))loadEntries();});
+
+// Proba kontrolatua: administratzaileak bakarrik sor dezake test-erregistroa.
+el('test-create').addEventListener('click', async () => {
+  const user = auth.currentUser;
+  if (!user || !user.emailVerified || !allowed.has((user.email || '').toLowerCase())) return;
+  if (!confirm('Probako bikote bat sortu Firestore-n?')) return;
+  el('test-create').disabled = true;
+  try {
+    await addDoc(collection(db, 'inscripciones'), {
+      numero: 1, jugador1: 'PROBA A', jugador2: 'PROBA B',
+      email: 'proba@example.invalid', telefono: '000000000',
+      estado: 'proba', prueba: true, creado: serverTimestamp()
+    });
+    msg('Probako bikotea gorde da. Ez da benetako izen-ematea.');
+    await loadEntries();
+  } catch(e) { msg('Ezin izan da proba gorde: ' + e.code); }
+  finally { el('test-create').disabled = false; }
+});
