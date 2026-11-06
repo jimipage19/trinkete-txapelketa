@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
-import { getFirestore, collection, getDocs, query, orderBy, addDoc, doc, updateDoc, serverTimestamp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import { getFirestore, collection, getDocs, query, orderBy, addDoc, doc, updateDoc, serverTimestamp, getDoc, runTransaction } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 const config = {
   apiKey: 'AIzaSyBvCzJ7mM-S-ov65HeGZ4Uqf4yAIo_YeKI',
@@ -27,7 +27,7 @@ onAuthStateChanged(auth,async user=>{
   const permitted=!!user && !!user.email && allowed.has(user.email.toLowerCase()) && user.emailVerified;
   el('login').hidden=permitted;
   el('dashboard').hidden=!permitted;
-  if(permitted){el('account').textContent='Saioa hasita: '+user.email;msg('Sarbidea egiaztatuta.');await loadEntries();}
+  if(permitted){el('account').textContent='Saioa hasita: '+user.email;msg('Sarbidea egiaztatuta.');await loadEntries();await loadRegistrationStatus();}
   else if(user){const email=user.email || '(helbiderik gabe)';msg('Kontu honek ez du administratzaile baimenik. Erabilitako kontua: '+email+'. Egiaztatu Google kontu zuzena hautatu duzula.');await signOut(auth);}
 });
 
@@ -40,8 +40,8 @@ async function loadEntries(){
     const rows=snapshot.docs.map(d=>({id:d.id,...d.data()}));
     stats.innerHTML=`<div><span>Izen-emateak</span><strong>${rows.length}</strong></div><div><span>Ordainduta</span><strong>${rows.filter(x=>x.estado==='pagado').length}</strong></div><div><span>Itxaron-zerrenda</span><strong>${rows.filter(x=>x.estado==='espera').length}</strong></div>`;
     if(!rows.length){entries.textContent='Oraindik ez dago izen-ematerik.';return;}
-    entries.innerHTML=rows.map(x=>`<div class="entry"><strong>#${safe(x.numero)} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado || 'jasota')}</small>${x.prueba === true && x.estado === 'proba' ? `<button class="annul-test" data-id="${safe(x.id)}" type="button">Probako izen-ematea baliogabetu</button>` : ''}</div>`).join('');
-    entries.querySelectorAll('.annul-test').forEach(button => button.addEventListener('click', () => annulTest(button.dataset.id, button)));
+    entries.innerHTML=rows.map(x=>`<div class="entry"><strong>#${safe(x.numero)} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado || 'jasota')}</small>${x.prueba !== true && ['pendiente','espera','ofrecida'].includes(x.estado) ? `<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button> <button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>` : ''}${x.prueba === true && x.estado === 'proba' ? `<button class="annul-test" data-id="${safe(x.id)}" type="button">Probako izen-ematea baliogabetu</button>` : ''}</div>`).join('');
+    entries.querySelectorAll('.pay-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'pagado',b)));entries.querySelectorAll('.annul-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'baliogabetuta',b)));entries.querySelectorAll('.annul-test').forEach(button => button.addEventListener('click', () => annulTest(button.dataset.id, button)));
   } catch(e) {
     entries.textContent='Ezin izan dira izen-emateak irakurri: '+e.code;
   }
@@ -79,3 +79,34 @@ async function annulTest(id, button) {
     await loadEntries();
   } catch(e) { msg('Ezin izan da baliogabetu: '+e.code); button.disabled=false; }
 }
+
+async function changeReal(id,status,button){if(!confirm(status==='pagado'?'Ordainketa egiaztatu duzu?':'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.'))return;button.disabled=true;try{await updateDoc(doc(db,'inscripciones',id),{estado:status});await loadEntries();}catch(e){msg('Ezin izan da aldatu: '+e.code);button.disabled=false;}}
+
+// Izen-emateak ireki/itxi: administratzaile baimenduentzat soilik.
+const registrationRef=doc(db,'config','contador');
+const registrationDeadline=new Date('2026-12-01T00:00:00+01:00');
+let registrationOpen=false;
+async function loadRegistrationStatus(){
+ const status=el('registration-status'), toggle=el('registration-toggle');
+ toggle.disabled=true;
+ try {
+  const snapshot=await getDoc(registrationRef);
+  if(!snapshot.exists()){status.textContent='Kontagailua ez da aurkitu.';return;}
+  registrationOpen=snapshot.data().abierto===true;
+  const expired=Date.now()>=registrationDeadline.getTime();
+  status.textContent=expired?'Epea amaituta (itxita)':registrationOpen?'IREKITA':'ITXITA';
+  toggle.textContent=registrationOpen?'Itxi izen-emateak':'Ireki izen-emateak';
+  toggle.disabled=expired;
+ }catch(e){status.textContent='Ezin izan da egoera irakurri: '+e.code;}
+}
+el('registration-toggle').addEventListener('click',async()=>{
+ const user=auth.currentUser;
+ if(!user||!user.emailVerified||!allowed.has((user.email||'').toLowerCase()))return;
+ if(Date.now()>=registrationDeadline.getTime()){msg('Izen-emateko epea amaitu da.');return;}
+ const next=!registrationOpen;
+ if(!confirm(next?'Izen-emateak publikoki IREKI nahi dituzu?':'Izen-emateak ITXI nahi dituzu?'))return;
+ const button=el('registration-toggle');button.disabled=true;
+ try{await updateDoc(registrationRef,{abierto:next});msg(next?'Izen-emateak ireki dira.':'Izen-emateak itxi dira.');}
+ catch(e){msg('Ezin izan da egoera aldatu: '+e.code);}
+ finally{await loadRegistrationStatus();}
+});
