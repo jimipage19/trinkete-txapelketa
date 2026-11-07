@@ -9,7 +9,7 @@ const config = {
   messagingSenderId: '367761843147',
   appId: '1:367761843147:web:1813eea95c3794872b4c4e'
 };
-const allowed = new Set(['andoitz1919@gmail.com', 'vazqueziturriondoiban@gmail.com']);
+const allowed = new Set(['andoitz1919@gmail.com', 'vazqueziturriondoiban@gmail.com', 'artetxuki@gmail.com']);
 const app=initializeApp(config), auth=getAuth(app), db=getFirestore(app), provider=new GoogleAuthProvider();
 const el=id=>document.getElementById(id), msg=t=>el('admin-msg').textContent=t;
 provider.setCustomParameters({prompt:'select_account'});
