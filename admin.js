@@ -1,5 +1,5 @@
 import { initializeApp } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-app.js';
-import { getFirestore, collection, getDocs, query, orderBy, addDoc, doc, updateDoc, serverTimestamp, getDoc, runTransaction } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
+import { getFirestore, collection, getDocs, query, orderBy, doc, updateDoc, serverTimestamp, getDoc, runTransaction, deleteField } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-firestore.js';
 import { getAuth, GoogleAuthProvider, signInWithPopup, signInWithRedirect, getRedirectResult, onAuthStateChanged, signOut } from 'https://www.gstatic.com/firebasejs/11.10.0/firebase-auth.js';
 const config = {
   apiKey: 'AIzaSyBvCzJ7mM-S-ov65HeGZ4Uqf4yAIo_YeKI',
@@ -34,6 +34,10 @@ onAuthStateChanged(auth,async user=>{
 const safe = value => String(value ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 let currentRows=[];
 const active = x => x.prueba !== true && ['pendiente','pagado','ofrecida'].includes(x.estado);
+const CIERRE_MS=Date.parse('2026-11-30T23:59:00+01:00');
+const normPhone=s=>String(s||'').replace(/[\s().-]/g,'');
+const normEmail=s=>String(s||'').trim().toLowerCase();
+const effectiveOpen=c=>c?.abierto===true&&(Date.now()<CIERRE_MS||c?.aperturaExcepcional===true);
 const fmtNum = n => String(n).padStart(3,'0');
 function deadline(x){if(!x.notificado || typeof x.notificado.toDate!=='function')return null;return new Date(x.notificado.toDate().getTime()+48*3600*1000);}
 function formatInstant(d){return new Intl.DateTimeFormat('eu-ES',{timeZone:'Europe/Madrid',day:'2-digit',month:'2-digit',year:'numeric',hour:'2-digit',minute:'2-digit',hourCycle:'h23'}).format(d);}
@@ -53,7 +57,7 @@ async function loadEntries(){
    const confirmButton=x.estado==='espera'&&canOffer&&firstWaiting.id===x.id?`<button class="sent" data-id="${safe(x.id)}" type="button">Jakinarazpena bidalita</button>`:'';
    const payButton=x.prueba!==true&&['pendiente','ofrecida'].includes(x.estado)?`<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button>`:'';
    const annulButton=x.prueba!==true&&['pendiente','espera','ofrecida'].includes(x.estado)?`<button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>`:'';
-   return `<div class="entry"><strong>#${safe(fmtNum(x.numero))} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado||'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${offered?`<small>Jakinarazpena: ${safe(formatDate(x.notificado))} · Ordaintzeko muga: ${limit?safe(formatInstant(limit)):'—'} ${expired?'(EPEA AMAITUTA)':''}</small>`:''}<div class="toolbar" style="margin-top:9px">${offerButton}${confirmButton}${payButton}${annulButton}</div></div>`;
+   return `<div class="entry"><strong>#${safe(fmtNum(x.numero))} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado||'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${(x.estado==='pendiente' && Date.now()>CIERRE_MS || offered&&expired)?'<small style="color:#9d4444">EPEA AMAITUTA — egiaztatu Bizumaren benetako data.</small>':''}${offered?`<small>Jakinarazpena: ${safe(formatDate(x.notificado))} · Ordaintzeko muga: ${limit?safe(formatInstant(limit)):'—'} ${expired?'(EPEA AMAITUTA)':''}</small>`:''}<div class="toolbar" style="margin-top:9px">${offerButton}${confirmButton}${payButton}${annulButton}</div></div>`;
   }).join('');
   entries.querySelectorAll('.offer').forEach(b=>b.addEventListener('click',()=>prepareEmail(b.dataset.id)));
   entries.querySelectorAll('.sent').forEach(b=>b.addEventListener('click',()=>markSent(b.dataset.id,b)));
@@ -69,19 +73,62 @@ function prepareEmail(id){
  window.location.href='mailto:'+encodeURIComponent(x.email)+'?subject='+encodeURIComponent(subject)+'&body='+encodeURIComponent(body);
  msg('Posta ireki da. Bidali ondoren, sakatu "Jakinarazpena bidalita".');
 }
+// Administrazio-ekintza guztiak kontagailuaren dokumentuaren bidez
+// serializatzen dira; alta berriak ere dokumentu hori idazten dute.
+// Transakzioan berrirakurtzen dira inskripzio guztiak (ez pantailako datuak).
+async function coordinated(action){
+ const snapshot=await getDocs(query(collection(db,'inscripciones'),orderBy('numero','asc')));
+ return runTransaction(db,async t=>{
+  const c=await t.get(doc(db,'config','contador'));
+  if(!c.exists())throw Error('Kontagailua falta da');
+  const snaps=[];
+  for(const d of snapshot.docs)snaps.push(await t.get(d.ref));
+  const rows=snaps.filter(s=>s.exists()).map(s=>({id:s.id,...s.data()}));
+  const result=await action(t,rows,c.data());
+  t.update(doc(db,'config','contador'),{gestionRevision:(c.data().gestionRevision||0)+1});
+  return result;
+ });
+}
 async function markSent(id,button){
  if(!confirm('Posta benetan bidali duzu? Baieztatzean 48 orduko epea hasiko da.'))return;
  button.disabled=true;
  try{
-  // Transactions keep the selected waitlist entry unchanged if another admin acts.
-  await runTransaction(db,async t=>{const ref=doc(db,'inscripciones',id);const s=await t.get(ref);if(!s.exists()||s.data().estado!=='espera')throw Error('Egoera aldatu da');t.update(ref,{estado:'ofrecida',notificado:serverTimestamp()});});
+  await coordinated((t,rows)=>{
+   const waiting=rows.filter(x=>x.prueba!==true&&x.estado==='espera').sort((a,b)=>a.numero-b.numero);
+   const occupied=rows.filter(active).length;
+   if(occupied>=24||waiting[0]?.id!==id)throw Error('Ez dago plaza librerik edo bikotea ez da lehenengoa.');
+   t.update(doc(db,'inscripciones',id),{estado:'ofrecida',notificado:serverTimestamp()});
+  });
   msg('Jakinarazpena erregistratuta. 48 orduko epea hasi da.');await loadEntries();
  }catch(e){msg('Ezin izan da eskaintza gorde: '+(e.code||e.message));button.disabled=false;}
 }
 el('refresh').disabled=false;
-el('refresh').addEventListener('click',()=>{if(auth.currentUser && allowed.has((auth.currentUser.email||'').toLowerCase()))loadEntries();});
-
-async function changeReal(id,status,button){if(!confirm(status==='pagado'?'Ordainketa egiaztatu duzu?':'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.'))return;button.disabled=true;try{await updateDoc(doc(db,'inscripciones',id),{estado:status});await loadEntries();}catch(e){msg('Ezin izan da aldatu: '+e.code);button.disabled=false;}}
+el('refresh').addEventListener('click',()=>{if(auth.currentUser && allowed.has((auth.currentUser.email||'').toLowerCase())){loadEntries();loadRegistrationStatus();}});
+async function changeReal(id,status,button){
+ if(!confirm(status==='pagado'?'Bizuma egiaztatu duzu? Epez kanpo bada, ordainketa garaiz egin zela egiaztatu.':'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.'))return;
+ button.disabled=true;
+ try{
+  await coordinated(async(t,rows)=>{
+   const x=rows.find(r=>r.id===id);
+   if(!x||x.prueba===true||!['pendiente','espera','ofrecida'].includes(x.estado))throw Error('Egoera aldatu da');
+   if(status==='pagado'){
+    if(!['pendiente','ofrecida'].includes(x.estado))throw Error('Ezin da itxaron-zerrendako ordainketa baieztatu');
+    if(x.estado==='pendiente'&&x.numero>24)throw Error('Plaza ez dago esleituta');
+    // Ez da plaza berririk esleitzen ordainketa baieztatzean.
+    t.update(doc(db,'inscripciones',id),{estado:'pagado'});
+   }else{
+    // Erreserbak askatu, zenbakia historikoan utzi.
+    const phoneRef=doc(db,'telefonoErreserbak',normPhone(x.telefono));
+    const emailRef=doc(db,'emailErreserbak',normEmail(x.email));
+    const phone=await t.get(phoneRef),email=await t.get(emailRef);
+    if(phone.exists()&&phone.data().uid===id)t.delete(phoneRef);
+    if(email.exists()&&email.data().uid===id)t.delete(emailRef);
+    t.update(doc(db,'inscripciones',id),{estado:'baliogabetuta'});
+   }
+  });
+  await loadEntries();
+ }catch(e){msg('Ezin izan da aldatu: '+(e.code||e.message));button.disabled=false;}
+}
 
 // Izen-emateak ireki/itxi: administratzaile baimenduentzat soilik.
 const registrationRef=doc(db,'config','contador');
@@ -92,8 +139,8 @@ async function loadRegistrationStatus(){
  try {
   const snapshot=await getDoc(registrationRef);
   if(!snapshot.exists()){status.textContent='Kontagailua ez da aurkitu.';return;}
-  registrationOpen=snapshot.data().abierto===true;
-  status.textContent=registrationOpen?'IREKITA':'ITXITA';
+  registrationOpen=effectiveOpen(snapshot.data());
+  status.textContent=registrationOpen?'IREKITA':(snapshot.data().abierto===true?'ITXITA (epe automatikoa amaituta)':'ITXITA');
   toggle.textContent=registrationOpen?'Itxi izen-emateak':'Ireki izen-emateak';
   toggle.disabled=false;
  }catch(e){status.textContent='Ezin izan da egoera irakurri: '+e.code;}
@@ -104,7 +151,7 @@ el('registration-toggle').addEventListener('click',async()=>{
  const next=!registrationOpen;
  if(!confirm(next?'Izen-emateak publikoki IREKI nahi dituzu?':'Izen-emateak ITXI nahi dituzu?'))return;
  const button=el('registration-toggle');button.disabled=true;
- try{await updateDoc(registrationRef,{abierto:next});msg(next?'Izen-emateak ireki dira.':'Izen-emateak itxi dira.');}
+ try{await updateDoc(registrationRef,{abierto:next,aperturaExcepcional:next&&Date.now()>=CIERRE_MS});msg(next?'Izen-emateak ireki dira.':'Izen-emateak itxi dira.');}
  catch(e){msg('Ezin izan da egoera aldatu: '+e.code);}
  finally{await loadRegistrationStatus();}
 });
