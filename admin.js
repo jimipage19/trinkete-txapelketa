@@ -56,12 +56,14 @@ async function loadEntries(){
    const offerButton=canOffer&&firstWaiting.id===x.id?`<button class="offer" data-id="${safe(x.id)}" type="button">Plaza eskaini (posta prestatu)</button>`:'';
    const confirmButton=x.estado==='espera'&&canOffer&&firstWaiting.id===x.id?`<button class="sent" data-id="${safe(x.id)}" type="button">Jakinarazpena bidalita</button>`:'';
    const payButton=x.prueba!==true&&['pendiente','ofrecida'].includes(x.estado)?`<button class="pay-real" data-id="${safe(x.id)}" type="button">Ordainketa baieztatu</button>`:'';
-   const annulButton=x.prueba!==true&&['pendiente','espera','ofrecida'].includes(x.estado)?`<button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>`:'';
-   return `<div class="entry"><strong>#${safe(fmtNum(x.numero))} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado||'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${(x.estado==='pendiente' && Date.now()>CIERRE_MS || offered&&expired)?'<small style="color:#9d4444">EPEA AMAITUTA — egiaztatu Bizumaren benetako data.</small>':''}${offered?`<small>Jakinarazpena: ${safe(formatDate(x.notificado))} · Ordaintzeko muga: ${limit?safe(formatInstant(limit)):'—'} ${expired?'(EPEA AMAITUTA)':''}</small>`:''}<div class="toolbar" style="margin-top:9px">${offerButton}${confirmButton}${payButton}${annulButton}</div></div>`;
+   const undoButton=x.prueba!==true&&x.estado==='pagado'?`<button class="undo-real" data-id="${safe(x.id)}" type="button">Ordainketa desegin</button>`:'';
+   const annulButton=x.prueba!==true&&['pendiente','espera','ofrecida','pagado'].includes(x.estado)?`<button class="annul-real" data-id="${safe(x.id)}" type="button">Baliogabetu</button>`:'';
+   return `<div class="entry"><strong>#${safe(fmtNum(x.numero))} · ${safe(x.jugador1)} / ${safe(x.jugador2)}</strong><small>${safe(x.email)} · ${safe(x.telefono)}</small><small>Egoera: ${safe(x.estado||'jasota')}</small><small>Izen-emate data: ${safe(formatDate(x.creado))}</small>${(x.estado==='pendiente' && Date.now()>CIERRE_MS || offered&&expired)?'<small style="color:#9d4444">EPEA AMAITUTA — egiaztatu Bizumaren benetako data.</small>':''}${x.gestionHistorial?.length?`<small>Azken aldaketa: ${safe(x.gestionHistorial[x.gestionHistorial.length-1].ekintza)} · ${safe(x.gestionHistorial[x.gestionHistorial.length-1].admin)} · ${safe(formatDate(x.gestionHistorial[x.gestionHistorial.length-1].unea))}</small>`:''}${offered?`<small>Jakinarazpena: ${safe(formatDate(x.notificado))} · Ordaintzeko muga: ${limit?safe(formatInstant(limit)):'—'} ${expired?'(EPEA AMAITUTA)':''}</small>`:''}<div class="toolbar" style="margin-top:9px">${offerButton}${confirmButton}${payButton}${undoButton}${annulButton}</div></div>`;
   }).join('');
   entries.querySelectorAll('.offer').forEach(b=>b.addEventListener('click',()=>prepareEmail(b.dataset.id)));
   entries.querySelectorAll('.sent').forEach(b=>b.addEventListener('click',()=>markSent(b.dataset.id,b)));
   entries.querySelectorAll('.pay-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'pagado',b)));
+  entries.querySelectorAll('.undo-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'desegin',b)));
   entries.querySelectorAll('.annul-real').forEach(b=>b.addEventListener('click',()=>changeReal(b.dataset.id,'baliogabetuta',b)));
  }catch(e){entries.textContent='Ezin izan dira izen-emateak irakurri: '+(e.code||e.message);}
 }
@@ -105,28 +107,49 @@ async function markSent(id,button){
 el('refresh').disabled=false;
 el('refresh').addEventListener('click',()=>{if(auth.currentUser && allowed.has((auth.currentUser.email||'').toLowerCase())){loadEntries();loadRegistrationStatus();}});
 async function changeReal(id,status,button){
- if(!confirm(status==='pagado'?'Bizuma egiaztatu duzu? Epez kanpo bada, ordainketa garaiz egin zela egiaztatu.':'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.'))return;
+ const xOnScreen=currentRows.find(r=>r.id===id);
+ if(!xOnScreen)return;
+ const warning=status==='pagado'
+  ? 'Bizuma egiaztatu duzu? Epez kanpo bada, ordainketa garaiz egin zela egiaztatu.'
+  : status==='desegin'
+  ? 'Ordainketa baieztapena desegin? Bikoteak plaza mantenduko du eta aurreko egoerara itzuliko da.'
+  : xOnScreen.estado==='pagado'
+  ? 'ADI: bikote hau ORDAINDUTA dago. Izen-ematea baliogabetzeak plaza askatuko du. Egiaztatu itzulketa edo ordainketa kudeaketa. Jarraitu?'
+  : 'Izen-emate hau baliogabetu? Zenbakia ez da berrerabiliko.';
+ if(!confirm(warning))return;
  button.disabled=true;
  try{
   await coordinated(async(t,rows)=>{
    const x=rows.find(r=>r.id===id);
-   if(!x||x.prueba===true||!['pendiente','espera','ofrecida'].includes(x.estado))throw Error('Egoera aldatu da');
+   if(!x||x.prueba===true)throw Error('Egoera aldatu da');
+   const changes={};
    if(status==='pagado'){
-    if(!['pendiente','ofrecida'].includes(x.estado))throw Error('Ezin da itxaron-zerrendako ordainketa baieztatu');
+    if(!['pendiente','ofrecida'].includes(x.estado))throw Error('Ezin da egoera honetako ordainketa baieztatu');
     if(x.estado==='pendiente'&&x.numero>24)throw Error('Plaza ez dago esleituta');
-    // Ez da plaza berririk esleitzen ordainketa baieztatzean.
-    t.update(doc(db,'inscripciones',id),{estado:'pagado'});
-   }else{
-    // Erreserbak askatu, zenbakia historikoan utzi.
+    changes.estado='pagado';
+    changes.estadoAntesPago=x.estado;
+   }else if(status==='desegin'){
+    if(x.estado!=='pagado')throw Error('Bikotea ez dago ordainduta');
+    const previous=x.estadoAntesPago || (x.numero<=24?'pendiente':(x.notificado?'ofrecida':null));
+    if(!['pendiente','ofrecida'].includes(previous))throw Error('Ezin da aurreko egoera zehaztu');
+    changes.estado=previous;
+    changes.estadoAntesPago=deleteField();
+   }else if(status==='baliogabetuta'){
+    if(!['pendiente','espera','ofrecida','pagado'].includes(x.estado))throw Error('Egoera aldatu da');
     const phoneRef=doc(db,'telefonoErreserbak',normPhone(x.telefono));
     const emailRef=doc(db,'emailErreserbak',normEmail(x.email));
     const phone=await t.get(phoneRef),email=await t.get(emailRef);
     if(phone.exists()&&phone.data().uid===id)t.delete(phoneRef);
     if(email.exists()&&email.data().uid===id)t.delete(emailRef);
-    t.update(doc(db,'inscripciones',id),{estado:'baliogabetuta'});
-   }
+    changes.estado='baliogabetuta';
+    if(x.estadoAntesPago)changes.estadoAntesPago=deleteField();
+   }else throw Error('Ekintza ezezaguna');
+   // Historial persistente: registra usuario, accion, estado previo y fecha del servidor.
+   const history=Array.isArray(x.gestionHistorial)?x.gestionHistorial:[];
+   changes.gestionHistorial=[...history,{ekintza:status,aurrekoa:x.estado,berria:changes.estado,admin:auth.currentUser.email,unea:new Date()}];
+   t.update(doc(db,'inscripciones',id),changes);
   });
-  await loadEntries();
+  msg('Aldaketa gordeta.');await loadEntries();
  }catch(e){msg('Ezin izan da aldatu: '+(e.code||e.message));button.disabled=false;}
 }
 
